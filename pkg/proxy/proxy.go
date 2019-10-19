@@ -182,6 +182,8 @@ func (g *proxy) Generate(file *generator.FileDescriptor) {
 		g.P(g.ProxyFns, "")
 		g.generateClientMaps(serviceName, file.GetPackage())
 		g.P(g.ProxyFns, "")
+		g.generateProxyClientStruct(serviceName)
+		g.gen.P("")
 		g.generateInitializeClients(serviceName, file.GetPackage(), service.Method)
 		g.generateClientFns(serviceName, file.GetPackage())
 		for _, method := range service.Method {
@@ -325,15 +327,16 @@ func (g *proxy) generateProxyStuff(file *generator.FileDescriptor) {
 	//g.gen.AddImport("")
 
 	// Do additional generation
-	g.generateProxyStruct(file.GetPackage())
 
-	g.gen.P(g.ProxyFns.String())
+	g.generateProxyStruct(file.GetPackage())
 	g.gen.P("")
-	g.gen.P(g.Clients.String())
+	g.generateProxyInterceptor(file.GetPackage())
 	g.gen.P("")
 	g.generateProxyRouter(file.GetPackage())
 	g.gen.P("")
-	g.generateProxyClientStruct(file.GetPackage())
+	g.gen.P(g.ProxyFns.String())
+	g.gen.P("")
+	g.gen.P(g.Clients.String())
 	g.gen.P("")
 
 	/*
@@ -394,23 +397,23 @@ func (g *proxy) generateProxyClientStruct(serviceName string) {
 // generates the constructor for the struct.
 func (g *proxy) generateProxyStruct(serviceName string) {
 	tName := generator.CamelCase(serviceName + "_proxy")
-	g.P(g.ProxyFns, "type "+tName+" struct {")
-	g.P(g.ProxyFns, "Provider tls.CertificateProvider")
-	g.P(g.ProxyFns, g.ClientMap.String())
-	g.P(g.ProxyFns, "}")
+	g.gen.P("type " + tName + " struct {")
+	g.gen.P("Provider tls.CertificateProvider")
+	//g.gen.P(g.ProxyFns, g.ClientMap.String())
+	g.gen.P("}")
 
-	g.P(g.ProxyFns, "")
+	g.gen.P("")
 
 	var args strings.Builder
 	args.WriteString("(")
 	args.WriteString("provider tls.CertificateProvider")
 	args.WriteString(")")
-	g.P(g.ProxyFns, "func New"+tName+args.String()+" *"+tName+"{")
-	g.P(g.ProxyFns, "return &"+tName+"{")
-	g.P(g.ProxyFns, "Provider: provider,")
-	g.P(g.ProxyFns, g.InitClients.String())
-	g.P(g.ProxyFns, "}")
-	g.P(g.ProxyFns, "}")
+	g.gen.P("func New" + tName + args.String() + " *" + tName + "{")
+	g.gen.P("return &" + tName + "{")
+	g.gen.P("Provider: provider,")
+	//g.gen.P(g.ProxyFns, g.InitClients.String())
+	g.gen.P("}")
+	g.gen.P("}")
 }
 
 func (g *proxy) generateClientMaps(serviceName, pkgName string) {
@@ -421,48 +424,37 @@ func (g *proxy) generateClientMaps(serviceName, pkgName string) {
 	g.P(g.ClientMap, serviceName+"Clients map[string]*"+fullServName+"Client")
 }
 
-/*
 // generateProxyInterceptor is a method of the proxy struct that satisfies the
 // grpc.UnaryInterceptor interface. This allows us to make use of the tls
 // information from the provider to include it with each subsequent request
 // from the proxy. This is also where we handle some of the routing decisions,
 // namely being able to filter on the supported service and handling the
 // 'proxyfrom' metadata field to prevent infinite loops.
-func (g *proxy) generateProxyInterceptor(serviceName string, pkgName string) {
+func (g *proxy) generateProxyInterceptor(serviceName string) {
 	tName := generator.CamelCase(serviceName + "_proxy")
-	fullServName := serviceName
-	if pkgName != "" {
-		fullServName = pkgName + "." + fullServName
-	}
-	g.P("func (p *" + tName + ") UnaryInterceptor() grpc.UnaryServerInterceptor {")
-	g.P("return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {")
-	// Artifically limit scope to OS api
-	g.P("pkg := strings.Split(info.FullMethod, \"/\")[1]")
-	g.P("if pkg != \"" + fullServName + "\" {")
-	g.P("return handler(ctx, req)")
-	g.P("}")
-	g.P("md, _ := metadata.FromIncomingContext(ctx)")
-	g.P("if _, ok := md[\"proxyfrom\"]; ok {")
-	g.P("return handler(ctx, req)")
-	g.P("}")
-	g.P("ca, err := p.Provider.GetCA()")
-	g.P("if err != nil {")
-	g.P("	return nil, err")
-	g.P("}")
-	g.P("certs, err := p.Provider.GetCertificate(nil)")
-	g.P("if err != nil {")
-	g.P("  return nil, err")
-	g.P("}")
-	g.P("tlsConfig, err := tls.New(")
-	g.P("  tls.WithClientAuthType(tls.Mutual),")
-	g.P("  tls.WithCACertPEM(ca),")
-	g.P("  tls.WithKeypair(*certs),")
-	g.P(")")
-	g.P("return p.Proxy(ctx, info.FullMethod, credentials.NewTLS(tlsConfig), req)")
-	g.P("}")
-	g.P("}")
+	g.gen.P("func (p *" + tName + ") UnaryInterceptor() grpc.UnaryServerInterceptor {")
+	g.gen.P("return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {")
+	g.gen.P("md, _ := metadata.FromIncomingContext(ctx)")
+	g.gen.P("if _, ok := md[\"proxyfrom\"]; ok {")
+	g.gen.P("return handler(ctx, req)")
+	g.gen.P("}")
+	g.gen.P("ca, err := p.Provider.GetCA()")
+	g.gen.P("if err != nil {")
+	g.gen.P("	return nil, err")
+	g.gen.P("}")
+	g.gen.P("certs, err := p.Provider.GetCertificate(nil)")
+	g.gen.P("if err != nil {")
+	g.gen.P("  return nil, err")
+	g.gen.P("}")
+	g.gen.P("tlsConfig, err := tls.New(")
+	g.gen.P("  tls.WithClientAuthType(tls.Mutual),")
+	g.gen.P("  tls.WithCACertPEM(ca),")
+	g.gen.P("  tls.WithKeypair(*certs),")
+	g.gen.P(")")
+	g.gen.P("return p.Proxy(ctx, info.FullMethod, credentials.NewTLS(tlsConfig), req)")
+	g.gen.P("}")
+	g.gen.P("}")
 }
-*/
 
 // generateProxyRunner is the function that handles the client calls and response
 // aggregation.
