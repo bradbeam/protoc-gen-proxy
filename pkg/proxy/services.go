@@ -1,0 +1,97 @@
+package proxy
+
+import (
+	"log"
+	"strings"
+
+	pb "github.com/golang/protobuf/protoc-gen-go/descriptor"
+	"github.com/golang/protobuf/protoc-gen-go/generator"
+)
+
+// generateServiceFuncType is a function with a specific signature. This function
+// gets passed through the 'runner' func to perform the actual client call.
+func (g *proxy) generateServiceFuncType(serviceName string) {
+	var args strings.Builder
+	args.WriteString("(")
+	args.WriteString("*proxy" + serviceName + "Client, ")
+	args.WriteString("interface{}, ")
+	args.WriteString("*sync.WaitGroup, ")
+	args.WriteString("chan proto.Message, ")
+	args.WriteString("chan error")
+	args.WriteString(")")
+	g.P(g.ProxyFns, "type runner"+generator.CamelCase(serviceName+"_fn")+" func"+args.String())
+}
+
+// generateServiceFunc is a function generated for each service defined in the
+// proto file. The function signature satisfies the runnerfn type.
+func (g *proxy) generateServiceFunc(serviceName string, method *pb.MethodDescriptorProto) {
+	log.Println(method.GetName())
+	var args strings.Builder
+	args.WriteString("(")
+	args.WriteString("client *proxy" + serviceName + "Client, ")
+	args.WriteString("in interface{}, ")
+	args.WriteString("wg *sync.WaitGroup, ")
+	args.WriteString("respCh chan proto.Message, ")
+	args.WriteString("errCh chan error")
+	args.WriteString(")")
+
+	g.P(g.ProxyFns, "func proxy"+generator.CamelCase(method.GetName())+args.String()+"{")
+	g.P(g.ProxyFns, "defer wg.Done()")
+	g.P(g.ProxyFns, "resp, err := client.Conn."+method.GetName()+"(client.Context, in.(*"+g.typeName(method.GetInputType())+"))")
+	g.P(g.ProxyFns, "if err != nil {")
+	g.P(g.ProxyFns, "errCh<-err")
+	g.P(g.ProxyFns, "return")
+	g.P(g.ProxyFns, "}")
+	// TODO: See if we can better abstract this
+	g.P(g.ProxyFns, "resp.Response[0].Metadata = &NodeMetadata{Hostname: client.Target}")
+	g.P(g.ProxyFns, "respCh<-resp")
+	g.P(g.ProxyFns, "}")
+}
+
+// generateServiceRunner is the function that handles the client calls and response
+// aggregation.
+func (g *proxy) generateServiceRunner(serviceName string) {
+	var args strings.Builder
+	args.WriteString("(")
+	args.WriteString("clients []*proxy" + serviceName + "Client, ")
+	args.WriteString("in interface{}, ")
+	args.WriteString("runner runner" + generator.CamelCase(serviceName+"_fn"))
+	args.WriteString(")")
+
+	var returns strings.Builder
+	returns.WriteString("(")
+	returns.WriteString("[]proto.Message, ")
+	returns.WriteString("error")
+	returns.WriteString(")")
+
+	g.P(g.ProxyFns, "func proxy"+generator.CamelCase(serviceName+"_runner")+args.String()+returns.String()+"{")
+	g.P(g.ProxyFns, "var (")
+	g.P(g.ProxyFns, "errors *go_multierror.Error")
+	g.P(g.ProxyFns, "wg sync.WaitGroup")
+	g.P(g.ProxyFns, ")")
+
+	g.P(g.ProxyFns, "respCh := make(chan proto.Message, len(clients))")
+	g.P(g.ProxyFns, "errCh := make(chan error, len(clients))")
+	g.P(g.ProxyFns, "wg.Add(len(clients))")
+
+	g.P(g.ProxyFns, "for _, client := range clients {")
+	g.P(g.ProxyFns, "go runner(client, in, &wg, respCh, errCh)")
+	g.P(g.ProxyFns, "}")
+
+	g.P(g.ProxyFns, "wg.Wait()")
+	g.P(g.ProxyFns, "close(respCh)")
+	g.P(g.ProxyFns, "close(errCh)")
+	g.P(g.ProxyFns, "")
+
+	g.P(g.ProxyFns, "var response []proto.Message")
+	g.P(g.ProxyFns, "for resp := range respCh {")
+	g.P(g.ProxyFns, "response = append(response, resp)")
+	g.P(g.ProxyFns, "}")
+
+	g.P(g.ProxyFns, "for err := range errCh {")
+	g.P(g.ProxyFns, "errors = go_multierror.Append(errors, err)")
+	g.P(g.ProxyFns, "}")
+
+	g.P(g.ProxyFns, "return response, errors.ErrorOrNil()")
+	g.P(g.ProxyFns, "}")
+}

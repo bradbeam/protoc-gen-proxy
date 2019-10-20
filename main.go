@@ -6,7 +6,6 @@ package main
 
 import (
 	"io/ioutil"
-	"log"
 	"os"
 
 	"github.com/golang/protobuf/proto"
@@ -47,7 +46,7 @@ func main() {
 
 	g.GenerateAllFiles()
 
-	log.Println(g.Response)
+	//	log.Println(g.Response)
 	// Send back the results.
 	data, err = proto.Marshal(g.Response)
 	if err != nil {
