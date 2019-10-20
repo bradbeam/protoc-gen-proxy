@@ -32,4 +32,5 @@ func (g *proxy) generateProxyInterceptor(serviceName string) {
 	g.gen.P("return p.Proxy(ctx, info.FullMethod, credentials.NewTLS(tlsConfig), req)")
 	g.gen.P("}")
 	g.gen.P("}")
+	g.gen.P("")
 }

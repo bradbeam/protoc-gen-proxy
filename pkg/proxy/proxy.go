@@ -6,132 +6,23 @@ package proxy
 
 import (
 	"fmt"
-	"log"
 	"strings"
 
 	pb "github.com/golang/protobuf/protoc-gen-go/descriptor"
 	"github.com/golang/protobuf/protoc-gen-go/generator"
 )
 
-// Generate is the main entrypoint to the plugin. This is where all
-// the magic happens.
-func (g *proxy) Generate(file *generator.FileDescriptor) {
-	// Try to filter out non-builtins
-	// ex, we don't want to do this for  google/protobuf/empty.proto
-	if strings.Contains(*file.Package, "google") {
-		return
-	}
-
-	// If we're dealing with the actual file to generate,
-	// we'll print out everything we've generated so far ( all bytes.Buffers )
-	// and we'll generate the high level wrappers like `Proxy()`,
-	// `UnaryInterceptor()`, `Runner()`
-	for _, f := range g.gen.Request.FileToGenerate {
-		if file.GetName() == f {
-			g.generateProxyStuff(file)
-			// TODO maybe call buffer.Reset() on all local buffers
-			return
-		}
-	}
-
-	// Otherwise, we'll generate all the fun per package/proto
-	// imports and switch statements so we can satisfy the
-	// - switch statement cases
-	// - various function definitions
-	// - client creation functions
-	for _, service := range file.FileDescriptorProto.Service {
-		log.Println(service.GetName())
-		serviceName := generator.CamelCase(service.GetName())
-		g.generateSwitchStatement(serviceName, file.GetPackage(), service.Method)
-		g.generateServiceFuncType(serviceName)
-
-		g.P(g.ProxyFns, "")
-		g.generateServiceRunner(serviceName)
-
-		g.P(g.ProxyFns, "")
-		g.generateProxyClientStruct(serviceName)
-
-		g.gen.P("")
-		g.generateClientFns(serviceName, file.GetPackage())
-
-		g.generateWrapperTypes(serviceName, file.GetPackage())
-
-		for _, method := range service.Method {
-			// No support for streaming stuff yet
-			if method.GetServerStreaming() || method.GetClientStreaming() {
-				continue
-			}
-			g.generateServiceFunc(serviceName, method)
-			g.P(g.ProxyFns, "")
-			g.generateWrapperFns(serviceName, file.GetPackage(), method)
-		}
-	}
-}
-
-func (g *proxy) generateClientFns(serviceName, pkgName string) {
-	fullServName := serviceName
-	if pkgName != "" {
-		fullServName = pkgName + "." + fullServName
-	}
-	g.P(g.Clients, "")
-	g.P(g.Clients, "func create"+serviceName+"Client(targets []string, creds credentials.TransportCredentials, proxyMd metadata.MD) ([]*proxy"+serviceName+"Client ,error){")
-	g.P(g.Clients, "var errors *go_multierror.Error")
-	g.P(g.Clients, "clients := make([]*proxy"+serviceName+"Client{}, 0, len(targets))")
-	g.P(g.Clients, "for _, target := range targets {")
-	g.P(g.Clients, "c := &proxy"+serviceName+"Client{")
-	g.P(g.Clients, "// TODO change the context to be more useful ( ex cancelable )")
-	g.P(g.Clients, "Context: metadata.NewOutgoingContext(context.Background(), proxyMd),")
-	g.P(g.Clients, "Target:  target,")
-	g.P(g.Clients, "}")
-	g.P(g.Clients, "// TODO: i think we potentially leak a client here,")
-	g.P(g.Clients, "// we should close the request // cancel the context if it errors")
-	g.P(g.Clients, "// Explicitly set OSD port")
-	g.P(g.Clients, "conn, err := grpc.Dial(fmt.Sprintf(\"%s:%d\", target, 50000), grpc.WithTransportCredentials(creds))")
-	g.P(g.Clients, "if err != nil {")
-	g.P(g.Clients, "// TODO: probably worth wrapping err to add some context about the target")
-	g.P(g.Clients, "errors = go_multierror.Append(errors, err)")
-	g.P(g.Clients, "continue")
-	g.P(g.Clients, "}")
-	g.P(g.Clients, "c.Conn = New"+serviceName+"Client(conn)")
-	g.P(g.Clients, "clients = append(clients, c)")
-	g.P(g.Clients, "}")
-	g.P(g.Clients, "return clients, errors.ErrorOrNil()")
-	g.P(g.Clients, "}")
-}
-
-func (g *proxy) generateProxyStuff(file *generator.FileDescriptor) {
-	g.gen.AddImport("strings")
-	g.gen.AddImport("sync")
-	g.gen.AddImport("google.golang.org/grpc/metadata")
-	g.gen.AddImport("google.golang.org/grpc/credentials")
-	g.gen.AddImport("github.com/hashicorp/go-multierror")
-	g.gen.AddImport("github.com/talos-systems/talos/pkg/grpc/tls")
-	// TODO: Add in additional imports for other protos
-	//g.gen.AddImport("")
-
-	g.generateProxyStruct(file.GetPackage())
-	g.gen.P("")
-	g.generateProxyInterceptor(file.GetPackage())
-	g.gen.P("")
-	g.generateProxyRouter(file.GetPackage())
-	g.gen.P("")
-	g.gen.P(g.ProxyFns.String())
-	g.gen.P("")
-	g.gen.P(g.Clients.String())
-	g.gen.P("")
-	g.gen.P(g.WrapperFns.String())
-}
-
 // generateProxyClientStruct holds the client connection and additional metadata
 // associated with each grpc ( client ) connection that the proxy creates. This
 // should only exist for the duration of the request.
-func (g *proxy) generateProxyClientStruct(serviceName string) {
+func (g *proxy) generateProxyClientStruct(serviceName, pkgName string) {
 	g.P(g.ProxyFns, "type proxy"+serviceName+"Client struct {")
-	g.P(g.ProxyFns, "Conn "+serviceName+"Client")
+	g.P(g.ProxyFns, "Conn "+pkgName+"."+serviceName+"Client")
 	g.P(g.ProxyFns, "Context context.Context")
 	g.P(g.ProxyFns, "Target string")
 	g.P(g.ProxyFns, "DialOpts []grpc.DialOption")
 	g.P(g.ProxyFns, "}")
+	g.P(g.ProxyFns, "")
 }
 
 // generateProxyStruct is the public struct exposed for use by importers. It
@@ -142,7 +33,6 @@ func (g *proxy) generateProxyStruct(serviceName string) {
 	g.gen.P("type " + tName + " struct {")
 	g.gen.P("Provider tls.CertificateProvider")
 	g.gen.P("}")
-
 	g.gen.P("")
 
 	var args strings.Builder
@@ -155,6 +45,7 @@ func (g *proxy) generateProxyStruct(serviceName string) {
 	//g.gen.P(g.ProxyFns, g.InitClients.String())
 	g.gen.P("}")
 	g.gen.P("}")
+	g.gen.P("")
 }
 
 // generateProxyRouter creates the routing part of the proxy. That is it
@@ -220,6 +111,10 @@ func (g *proxy) generateSwitchStatement(serviceName, pkgName string, methods []*
 	for _, method := range methods {
 		// No support for streaming stuff yet
 		if method.GetServerStreaming() || method.GetClientStreaming() {
+			continue
+		}
+		// skip support for deprecated methods
+		if method.GetOptions().GetDeprecated() {
 			continue
 		}
 		fullServName := serviceName

@@ -20,11 +20,16 @@ func (g *proxy) generateServiceFuncType(serviceName string) {
 	args.WriteString("chan error")
 	args.WriteString(")")
 	g.P(g.ProxyFns, "type runner"+generator.CamelCase(serviceName+"_fn")+" func"+args.String())
+	g.P(g.ProxyFns, "")
 }
 
 // generateServiceFunc is a function generated for each service defined in the
 // proto file. The function signature satisfies the runnerfn type.
 func (g *proxy) generateServiceFunc(serviceName string, method *pb.MethodDescriptorProto) {
+	// skip support for deprecated methods
+	if method.GetOptions().GetDeprecated() {
+		return
+	}
 	log.Println(method.GetName())
 	var args strings.Builder
 	args.WriteString("(")
@@ -46,6 +51,7 @@ func (g *proxy) generateServiceFunc(serviceName string, method *pb.MethodDescrip
 	g.P(g.ProxyFns, "resp.Response[0].Metadata = &NodeMetadata{Hostname: client.Target}")
 	g.P(g.ProxyFns, "respCh<-resp")
 	g.P(g.ProxyFns, "}")
+	g.P(g.ProxyFns, "")
 }
 
 // generateServiceRunner is the function that handles the client calls and response
@@ -94,4 +100,37 @@ func (g *proxy) generateServiceRunner(serviceName string) {
 
 	g.P(g.ProxyFns, "return response, errors.ErrorOrNil()")
 	g.P(g.ProxyFns, "}")
+	g.P(g.ProxyFns, "")
+}
+
+// generateClientFns generates the helper functions to instantiate a slice of service oriented client connections.
+func (g *proxy) generateClientFns(serviceName, pkgName string) {
+	fullServName := serviceName
+	if pkgName != "" {
+		fullServName = pkgName + "." + fullServName
+	}
+	g.P(g.Clients, "")
+	g.P(g.Clients, "func create"+serviceName+"Client(targets []string, creds credentials.TransportCredentials, proxyMd metadata.MD) ([]*proxy"+serviceName+"Client ,error){")
+	g.P(g.Clients, "var errors *go_multierror.Error")
+	g.P(g.Clients, "clients := make([]*proxy"+serviceName+"Client, 0, len(targets))")
+	g.P(g.Clients, "for _, target := range targets {")
+	g.P(g.Clients, "c := &proxy"+serviceName+"Client{")
+	g.P(g.Clients, "// TODO change the context to be more useful ( ex cancelable )")
+	g.P(g.Clients, "Context: metadata.NewOutgoingContext(context.Background(), proxyMd),")
+	g.P(g.Clients, "Target:  target,")
+	g.P(g.Clients, "}")
+	g.P(g.Clients, "// TODO: i think we potentially leak a client here,")
+	g.P(g.Clients, "// we should close the request // cancel the context if it errors")
+	g.P(g.Clients, "// Explicitly set OSD port")
+	g.P(g.Clients, "conn, err := grpc.Dial(fmt.Sprintf(\"%s:%d\", target, 50000), grpc.WithTransportCredentials(creds))")
+	g.P(g.Clients, "if err != nil {")
+	g.P(g.Clients, "// TODO: probably worth wrapping err to add some context about the target")
+	g.P(g.Clients, "errors = go_multierror.Append(errors, err)")
+	g.P(g.Clients, "continue")
+	g.P(g.Clients, "}")
+	g.P(g.Clients, "c.Conn = "+pkgName+".New"+serviceName+"Client(conn)")
+	g.P(g.Clients, "clients = append(clients, c)")
+	g.P(g.Clients, "}")
+	g.P(g.Clients, "return clients, errors.ErrorOrNil()")
+	g.P(g.Clients, "}")
 }
